@@ -25,6 +25,13 @@ picked up and grouped correctly without any adjustments.
 
 Already-downloaded files are skipped on subsequent runs.
 
+> [!CAUTION]
+> The downloaded `.ovpn` files contain your personal activation credentials
+> and are tied to your ExpressVPN account. Do not share them, publish them,
+> or distribute them to others. Doing so would expose your account credentials
+> and likely violates ExpressVPN's terms of service and copyright. These files
+> are for your own use only.
+
 ## Requirements
 
 - Python 3.12+
