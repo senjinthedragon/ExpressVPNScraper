@@ -148,6 +148,12 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--email",
+        metavar="ADDRESS",
+        default=None,
+        help="account email address, skipping the interactive prompt.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         default=False,
@@ -185,6 +191,7 @@ async def main(
     country_code: str | None,
     file_target: str | None,
     force: bool,
+    email: str | None,
 ) -> None:
     # asyncio.run() installs its own SIGINT handler that defers KeyboardInterrupt
     # until the event loop can process it. During blocking input() calls the
@@ -208,7 +215,7 @@ async def main(
 
         try:
             # Step 1 - log in via the email OTP flow (user provides both inputs)
-            await login(page)
+            await login(page, email=email)
 
             # Step 2 - navigate to the .ovpn download page
             await find_ovpn_download_page(page)
@@ -269,6 +276,6 @@ async def main(
 if __name__ == "__main__":
     args = _parse_args()
     try:
-        asyncio.run(main(args.filter, args.country, args.file, args.force))
+        asyncio.run(main(args.filter, args.country, args.file, args.force, args.email))
     except KeyboardInterrupt:
         pass

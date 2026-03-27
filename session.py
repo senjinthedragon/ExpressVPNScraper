@@ -57,13 +57,13 @@ DOWNLOAD_DELAY_SECONDS = 0.8
 # ---------------------------------------------------------------------------
 
 
-async def login(page: Page) -> None:
+async def login(page: Page, email: str | None = None) -> None:
     """Walk through the ExpressVPN email-OTP login flow.
 
-    The user is prompted for their email address and, once ExpressVPN
-    sends the verification code, for that code as well. The browser
-    fills in both fields so the session cookies are set exactly as they
-    would be for a real user.
+    If email is provided it is used directly; otherwise the user is prompted.
+    After submitting the email, OTP_REQUIRED is printed to stdout so that
+    a calling process can detect when to supply the verification code via
+    stdin. The code is then read from stdin (interactive or piped).
     """
     await page.goto(EXPRESSVPN_URL, wait_until="domcontentloaded")
 
@@ -72,8 +72,9 @@ async def login(page: Page) -> None:
     await account_link.first.click()
     await page.wait_for_load_state("domcontentloaded")
 
-    # Prompt the user for their email and fill it into the login form
-    email = input("Enter your ExpressVPN account email: ").strip()
+    # Use the supplied email or prompt interactively
+    if not email:
+        email = input("Enter your ExpressVPN account email: ").strip()
     email_input = page.get_by_role("textbox", name=re.compile(r"email", re.IGNORECASE))
     await email_input.fill(email)
 
@@ -87,7 +88,10 @@ async def login(page: Page) -> None:
     # Wait until the code entry field appears
     await page.wait_for_selector("input", timeout=30_000)
 
-    code = input("Check your inbox and enter the verification code: ").strip()
+    # Signal to any calling process that the OTP is now needed.
+    # A tray app can watch stdout for this line, then write the code to stdin.
+    print("OTP_REQUIRED", flush=True)
+    code = input("Enter the verification code from your inbox: ").strip()
 
     # ExpressVPN may render the code field as a single text input or as
     # individual single-digit boxes - handle both cases.
