@@ -423,7 +423,7 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
     if interrupted:
         saved = total - skipped - failed - 1  # last file was not completed
         print(f"\nInterrupted. {saved} files saved to {DOWNLOAD_DIR.resolve()}")
-        return
+        raise KeyboardInterrupt
 
     saved = total - skipped - failed
     parts = [f"{saved} downloaded"]
