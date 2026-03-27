@@ -175,16 +175,14 @@ async def find_ovpn_download_page(page: Page) -> bool:
         print("Manual tab not found - page may already be on the right section.")
 
     # Trust the URL - if we landed on #manual the page is correct.
-    # Link detection happens in collect_ovpn_links, not here.
+    # Region detection happens in collect_ovpn_links, not here.
     if "manual" in page.url.lower():
         print("Manual config section ready.")
         return True
 
-    # If the URL does not have #manual yet, check for direct links or
-    # region headers as a fallback confirmation.
-    has_links = await page.locator("a[href$='.ovpn']").count() > 0
-    has_regions = await _find_region_toggles(page).count() > 0
-    if has_links or has_regions:
+    # If the URL does not have #manual yet, check for direct .ovpn links
+    # as a fallback confirmation.
+    if await page.locator("a[href$='.ovpn']").count() > 0:
         print("Config page ready.")
         return True
 
@@ -197,24 +195,51 @@ async def find_ovpn_download_page(page: Page) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_region_toggles(page: Page):
-    """Return a locator for the continent/region accordion section headers.
+REGION_NAMES = ["Americas", "Europe", "Asia Pacific", "Middle East & Africa"]
 
-    The manual-config section groups servers by region. Each region header
-    is a clickable element whose visible text is exactly a continent name.
-    We cast a wide net over element types (div, li, button, span, etc.)
-    because the portal may use plain div/li elements with click handlers
-    rather than semantic button or summary elements.
+
+async def _click_regions_and_collect(page: Page) -> list[str]:
+    """Find and click each continent section header using JavaScript.
+
+    When Playwright locators cannot find the region toggle elements (because
+    they may be plain divs or other non-semantic elements), we fall back to
+    a JavaScript DOM walk that finds elements whose trimmed text exactly
+    matches one of the four continent names, clicks each one in turn, and
+    collects .ovpn links after each click.
+
+    Returns a flat list of raw hrefs collected across all regions.
     """
-    # Exact-match the four continent group names used on the setup page.
-    # Using anchors (^...$) avoids matching inner expanded content that
-    # also contains these words.
-    continent_pattern = re.compile(
-        r"^(Americas|Europe|Asia Pacific|Middle East & Africa)$", re.IGNORECASE
-    )
-    return page.locator("button, [role='button'], summary, div, li, span, h2, h3, h4, dt").filter(
-        has_text=continent_pattern
-    )
+    raw_hrefs: list[str] = []
+
+    for name in REGION_NAMES:
+        # Walk the full DOM and click the first element whose trimmed
+        # innerText equals the target region name exactly.
+        clicked = await page.evaluate(
+            """name => {
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_ELEMENT
+                );
+                while (walker.nextNode()) {
+                    const el = walker.currentNode;
+                    const text = (el.innerText || el.textContent || "").trim();
+                    if (text === name) {
+                        el.click();
+                        return el.tagName + " | " + (el.className || "(no class)");
+                    }
+                }
+                return null;
+            }""",
+            name,
+        )
+
+        if clicked:
+            print(f"  Clicked '{name}' ({clicked}) - collecting links...")
+            await asyncio.sleep(0.5)
+            raw_hrefs.extend(await _scrape_links_from_current_view(page))
+        else:
+            print(f"  Could not find section header for '{name}'")
+
+    return raw_hrefs
 
 
 async def _scrape_links_from_current_view(page: Page) -> list[str]:
@@ -246,9 +271,12 @@ async def collect_ovpn_links(page: Page) -> list[str]:
     The manual-config section uses an exclusive accordion where only one
     region panel (Americas, Europe, Asia Pacific, Middle East & Africa) can
     be open at a time. Links only appear in the DOM after their panel is
-    opened, so we click each region header in turn and harvest links after
-    each click. Falls back to a direct single-pass scan if no region headers
-    are found (in case the page layout changes).
+    opened, so we iterate through all four region names, click each header
+    via a JavaScript DOM walk (which works regardless of element type), and
+    collect links after each click.
+
+    Falls back to a direct single-pass scan if no region headers are clicked
+    (e.g. if the page layout changes and region names are different).
 
     Relative hrefs are resolved against the current page's origin so they
     work correctly whether we are on the portal or the main site.
@@ -256,24 +284,16 @@ async def collect_ovpn_links(page: Page) -> list[str]:
     raw_hrefs: list[str] = []
     current_origin = base_origin(page.url)
 
-    region_toggles = await _find_region_toggles(page).all()
-    print(f"Region toggles found: {len(region_toggles)}")
+    # Use JavaScript to find and click each region header regardless of
+    # what element type ExpressVPN uses for the accordion toggles.
+    print("Clicking through region sections...")
+    js_hrefs = await _click_regions_and_collect(page)
 
-    if region_toggles:
-        # Exclusive accordion - open each region in turn and collect its links
-        print(f"Found {len(region_toggles)} region section(s) - iterating through each.")
-        for toggle in region_toggles:
-            try:
-                label = await toggle.inner_text()
-                print(f"  Opening section: {label.strip()}")
-                await toggle.click()
-                await asyncio.sleep(0.5)
-            except Exception:
-                continue
-            raw_hrefs.extend(await _scrape_links_from_current_view(page))
+    if js_hrefs:
+        raw_hrefs.extend(js_hrefs)
     else:
-        # No region accordion found - try a direct scan of all links on the page
-        print("No region sections found - scanning page directly.")
+        # JS approach found nothing either - fall back to a direct scan
+        print("No region sections clicked - scanning page directly.")
         raw_hrefs.extend(await _scrape_links_from_current_view(page))
 
     absolute = [normalize_url(h, current_origin) for h in raw_hrefs]
