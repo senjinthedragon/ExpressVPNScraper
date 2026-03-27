@@ -17,8 +17,12 @@ It walks through the same login flow you would use manually:
    (Americas, Europe, Asia Pacific, Middle East & Africa) in turn, and
    downloads every `.ovpn` file it finds
 
-Files are saved to `ovpn_files/` with clean, human-readable names derived
-from the server location (e.g. `usa-new-york.ovpn`, `uk-east-london.ovpn`).
+Files are saved to `ovpn_files/` with names derived from the server location
+(e.g. `usa_-_new_york.ovpn`, `uk_-_east_london.ovpn`). The naming convention
+is compatible with the [DragonFoxVPN](https://github.com/senjinthedragon/DragonFoxVPN)
+backend - leave `CONF_PREFIX` empty in your config and the files will be
+picked up and grouped correctly without any adjustments.
+
 Already-downloaded files are skipped on subsequent runs.
 
 ## Requirements
