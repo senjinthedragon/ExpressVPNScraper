@@ -76,8 +76,32 @@ pip install -r requirements-dev.txt
 ## Usage
 
 ```bash
-python scraper.py
+python scraper.py [FILTER] [--country CODE]
 ```
+
+By default all locations are downloaded. Three options let you narrow it down,
+and `--force` applies to any of them:
+
+| Option | Example | Effect |
+| --- | --- | --- |
+| `FILTER` | `python scraper.py "new york"` | Case-insensitive substring match against the location name |
+| `--country CODE` | `python scraper.py --country nl` | ISO 3166-1 alpha-2 country code -- matches only that country |
+| `--file FILENAME` | `python scraper.py --file usa_-_new_york` | Single file by its DragonFoxVPN filename (`.ovpn` extension optional) |
+| `--force` | `python scraper.py --force` | Overwrite files that already exist instead of skipping them |
+
+```bash
+python scraper.py                              # download everything
+python scraper.py netherlands                  # locations whose name contains 'netherlands'
+python scraper.py "new york"                   # New York servers only
+python scraper.py --country nl                 # Netherlands servers (via country code)
+python scraper.py --country us                 # all USA servers
+python scraper.py --file usa_-_new_york        # single file by DragonFoxVPN filename
+python scraper.py --country nl --force         # re-download Netherlands even if files exist
+python scraper.py --file usa_-_new_york --force  # force re-download one file
+```
+
+`FILTER`, `--country`, and `--file` are mutually exclusive. Run
+`python scraper.py --help` for the full list of supported country codes.
 
 A browser will open in the background. Follow the prompts in the terminal
 to complete the login. A progress bar shows the current file, overall

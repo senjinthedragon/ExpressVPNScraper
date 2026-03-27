@@ -301,13 +301,17 @@ async def collect_ovpn_links(page: Page) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
+async def download_ovpn_files(
+    page: Page, links: list[tuple[str, str]], *, force: bool = False
+) -> None:
     """Fetch each custom_installer URL and save the .ovpn content to disk.
 
     Each URL is fetched using the page's authenticated session (which holds
     the portal cookies). The server returns the raw .ovpn file content.
     The destination filename is derived from the server location label
     (e.g. "USA - NEW YORK" -> "usa_-_new_york.ovpn").
+
+    If force is True, existing files are overwritten instead of skipped.
 
     A rich progress bar shows the current filename, overall progress, and
     an estimated time to completion that updates as each file is fetched.
@@ -339,7 +343,7 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
                 dest = DOWNLOAD_DIR / filename
                 progress.update(task, filename=filename)
 
-                if dest.exists():
+                if dest.exists() and not force:
                     skipped += 1
                     progress.advance(task)
                     # No delay - skipped files don't hit the network
