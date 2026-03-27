@@ -1,5 +1,6 @@
-# Runtime dependency - browser automation
+# Runtime dependencies
 playwright>=1.44.0
+rich>=13.0.0
 
 # Development dependencies - linting and testing
 ruff>=0.4.0

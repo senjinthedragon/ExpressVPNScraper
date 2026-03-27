@@ -7,13 +7,14 @@
 # Unit tests for the pure helper functions exported by session.py.
 # None of these tests require a browser or network access - they run
 # entirely in-process and finish in milliseconds.
-#   - TestBaseOrigin     covers scheme+host extraction from full URLs.
-#   - TestNormalizeUrl   covers absolute passthrough and relative resolution.
+#   - TestBaseOrigin      covers scheme+host extraction from full URLs.
+#   - TestNormalizeUrl    covers absolute passthrough and relative resolution.
 #   - TestFilenameFromUrl covers path extraction and query-string stripping.
-#   - TestDeduplicate    covers ordering guarantees and full-URL deduplication.
+#   - TestLabelToFilename covers location label to .ovpn filename conversion.
+#   - TestDeduplicate     covers ordering guarantees and full-URL deduplication.
 
 
-from session import base_origin, deduplicate, filename_from_url, normalize_url
+from session import base_origin, deduplicate, filename_from_url, label_to_filename, normalize_url
 
 BASE = "https://www.expressvpn.com"
 
@@ -95,6 +96,41 @@ class TestFilenameFromUrl:
 
     def test_no_query_string_works_normally(self):
         assert filename_from_url("https://example.com/jp-tokyo.ovpn") == "jp-tokyo.ovpn"
+
+
+# ---------------------------------------------------------------------------
+# label_to_filename
+# ---------------------------------------------------------------------------
+
+
+class TestLabelToFilename:
+    def test_us_city_label(self):
+        # " - " separator is preserved as "_-_" for PHP backend compatibility
+        assert label_to_filename("USA - NEW YORK") == "usa_-_new_york.ovpn"
+
+    def test_uk_label(self):
+        assert label_to_filename("UK - EAST LONDON") == "uk_-_east_london.ovpn"
+
+    def test_ampersand_becomes_underscore(self):
+        # & is not alphanumeric, collapses into surrounding underscores
+        assert label_to_filename("MIDDLE EAST & AFRICA") == "middle_east_africa.ovpn"
+
+    def test_parentheses_stripped(self):
+        assert label_to_filename("INDIA (VIA UK)") == "india_via_uk.ovpn"
+
+    def test_numbered_suffix(self):
+        # Multiple " - " separators all become "_-_"
+        assert label_to_filename("USA - LOS ANGELES - 3") == "usa_-_los_angeles_-_3.ovpn"
+
+    def test_single_word_label(self):
+        assert label_to_filename("SWEDEN") == "sweden.ovpn"
+
+    def test_multiword_country_no_city(self):
+        # Countries with spaces but no city use underscores between words
+        assert label_to_filename("SOUTH AFRICA") == "south_africa.ovpn"
+
+    def test_already_lowercase_is_unchanged(self):
+        assert label_to_filename("japan - tokyo") == "japan_-_tokyo.ovpn"
 
 
 # ---------------------------------------------------------------------------

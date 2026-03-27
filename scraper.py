@@ -33,17 +33,11 @@ USER_AGENT = (
 
 async def main():
     async with async_playwright() as pw:
-        # Launch a visible browser window - headless mode is more easily
-        # fingerprinted as automation, so we use a real window instead.
-        browser = await pw.chromium.launch(
-            headless=False,
-            args=["--start-maximized"],
-        )
+        browser = await pw.chromium.launch(headless=True)
 
         # Create a browser context with realistic locale and timezone settings
         # so the request profile matches a genuine user session.
         context = await browser.new_context(
-            viewport=None,  # Let the OS window size dictate the viewport
             user_agent=USER_AGENT,
             locale="en-US",
             timezone_id="America/New_York",
@@ -51,6 +45,8 @@ async def main():
         page = await context.new_page()
 
         try:
+            print("ExpressVPN OVPN Scraper\n")
+
             # Step 1 - log in via the email OTP flow (user provides both inputs)
             await login(page)
 
@@ -68,16 +64,21 @@ async def main():
             links = await collect_ovpn_links(page)
 
             if not links:
-                print("No .ovpn links found on the current page.")
+                print("No download links found on the current page.")
                 print(f"Current URL: {page.url}")
                 sys.exit(1)
 
             # Step 4 - download each file, skipping any already on disk
             await download_ovpn_files(page, links)
 
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
         finally:
             await browser.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
