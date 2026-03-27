@@ -58,6 +58,13 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+If you want to contribute or run the tests, install the development
+dependencies instead:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 > [!TIP]
 > **Raspberry Pi / headless Linux**: Chromium runs fine without a display
 > server. If you get errors about missing system libraries, install them with:
