@@ -104,13 +104,13 @@ async def main():
             await download_ovpn_files(page, links)
 
         except KeyboardInterrupt:
-            # Exit immediately without waiting for async browser cleanup.
-            # download_ovpn_files already printed a summary if interrupted
-            # during download; for earlier phases a silent exit is fine.
-            os._exit(0)
+            pass  # download_ovpn_files prints a summary if interrupted there
         finally:
             await browser.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
