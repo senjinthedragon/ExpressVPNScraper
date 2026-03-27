@@ -106,7 +106,10 @@ async def main():
         except KeyboardInterrupt:
             pass  # download_ovpn_files prints a summary if interrupted there
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass  # driver may already be gone on interrupt
 
 
 if __name__ == "__main__":
