@@ -83,9 +83,10 @@ A browser will open in the background. Follow the prompts in the terminal
 to complete the login. A progress bar shows the current file, overall
 progress, and an estimated time to completion.
 
-Expect around 30-60 minutes to download the full server list - the
+Expect around 15-30 minutes to download the full server list - the
 ExpressVPN endpoint generates each config file on demand, so downloads
-are not instant.
+are not instant. Response times vary and the ETA in the progress bar
+will fluctuate throughout the run.
 
 ## Notes
 

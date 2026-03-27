@@ -7,8 +7,8 @@
 # Launches a headless Chromium browser and orchestrates the four-step scrape:
 #   - login() prompts for email and OTP code, fills them into the live browser
 #     so the resulting session is indistinguishable from a real user login.
-#   - find_ovpn_download_page() navigates to the config download page
-#     automatically, or pauses and asks the user to do it manually.
+#   - find_ovpn_download_page() navigates to the manual config section
+#     automatically, raising RuntimeError if navigation fails.
 #   - collect_ovpn_links() harvests every .ovpn URL from the page.
 #   - download_ovpn_files() saves each file to ovpn_files/ on disk.
 #
@@ -83,21 +83,13 @@ async def main():
             await login(page)
 
             # Step 2 - navigate to the .ovpn download page
-            found = await find_ovpn_download_page(page)
-
-            if not found:
-                # If automatic navigation fails, let the user take over and
-                # manually browse to the right page before we continue.
-                print("\nCould not automatically locate the .ovpn download page.")
-                print("Please navigate to it in the browser, then press Enter here.")
-                input("Press Enter when you are on the download page: ")
+            await find_ovpn_download_page(page)
 
             # Step 3 - collect every .ovpn link on the current page
             links = await collect_ovpn_links(page)
 
             if not links:
-                print("No download links found on the current page.")
-                print(f"Current URL: {page.url}")
+                print("No download links found. The page layout may have changed.")
                 sys.exit(1)
 
             # Step 4 - download each file, skipping any already on disk
@@ -105,6 +97,9 @@ async def main():
 
         except KeyboardInterrupt:
             pass  # download_ovpn_files prints a summary if interrupted there
+        except RuntimeError as exc:
+            print(f"\nError: {exc}")
+            sys.exit(1)
         finally:
             try:
                 await browser.close()

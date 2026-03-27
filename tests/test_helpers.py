@@ -11,10 +11,9 @@
 #   - TestNormalizeUrl    covers absolute passthrough and relative resolution.
 #   - TestFilenameFromUrl covers path extraction and query-string stripping.
 #   - TestLabelToFilename covers location label to .ovpn filename conversion.
-#   - TestDeduplicate     covers ordering guarantees and full-URL deduplication.
 
 
-from session import base_origin, deduplicate, filename_from_url, label_to_filename, normalize_url
+from session import base_origin, filename_from_url, label_to_filename, normalize_url
 
 BASE = "https://www.expressvpn.com"
 
@@ -131,38 +130,3 @@ class TestLabelToFilename:
 
     def test_already_lowercase_is_unchanged(self):
         assert label_to_filename("japan - tokyo") == "japan_-_tokyo.ovpn"
-
-
-# ---------------------------------------------------------------------------
-# deduplicate
-# ---------------------------------------------------------------------------
-
-
-class TestDeduplicate:
-    def test_empty_list_returns_empty(self):
-        assert deduplicate([]) == []
-
-    def test_list_with_no_duplicates_is_unchanged(self):
-        items = ["a", "b", "c"]
-        assert deduplicate(items) == items
-
-    def test_duplicates_are_removed(self):
-        assert deduplicate(["a", "b", "a", "c"]) == ["a", "b", "c"]
-
-    def test_original_order_is_preserved(self):
-        # The first occurrence of each item should be kept, not the last
-        assert deduplicate(["c", "a", "b", "a", "c"]) == ["c", "a", "b"]
-
-    def test_all_duplicates_collapses_to_one(self):
-        assert deduplicate(["x", "x", "x"]) == ["x"]
-
-    def test_works_with_full_urls(self):
-        urls = [
-            "https://www.expressvpn.com/configs/uk.ovpn",
-            "https://www.expressvpn.com/configs/us.ovpn",
-            "https://www.expressvpn.com/configs/uk.ovpn",  # duplicate
-        ]
-        result = deduplicate(urls)
-        assert len(result) == 2
-        assert result[0].endswith("uk.ovpn")
-        assert result[1].endswith("us.ovpn")

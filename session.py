@@ -17,8 +17,8 @@
 #     resulting .ovpn file using the server location name as the filename.
 #
 # Pure helpers at the bottom of the file (base_origin, normalize_url,
-# filename_from_url, label_to_filename, deduplicate) have no browser
-# dependency and are covered by unit tests.
+# filename_from_url, label_to_filename) have no browser dependency and
+# are covered by unit tests.
 
 import asyncio
 import re
@@ -143,7 +143,7 @@ async def _find_subscription_setup_url(page: Page) -> str | None:
     return None
 
 
-async def find_ovpn_download_page(page: Page) -> bool:
+async def find_ovpn_download_page(page: Page) -> None:
     """Navigate to the manual-config section of the portal setup page.
 
     The setup page URL must include the account's subscription_id parameter
@@ -155,8 +155,7 @@ async def find_ovpn_download_page(page: Page) -> bool:
     clicking a tab - this is more reliable in headless mode where tab
     clicks can land on the wrong section.
 
-    Returns False if navigation fails so the caller can ask the user to
-    navigate manually.
+    Raises RuntimeError if navigation fails.
     """
     # Find the subscription-specific setup link from the portal dashboard.
     # This avoids hard-coding a URL structure that includes a private ID.
@@ -175,15 +174,9 @@ async def find_ovpn_download_page(page: Page) -> bool:
     try:
         response = await page.goto(manual_url, wait_until="domcontentloaded", timeout=15_000)
         if not (response and response.ok):
-            return False
+            raise RuntimeError(f"Failed to load the download page ({manual_url})")
     except PlaywrightTimeoutError:
-        return False
-
-    if "manual" in page.url.lower():
-        return True
-
-    print(f"Could not confirm manual config section. Current URL: {page.url}")
-    return False
+        raise RuntimeError(f"Timed out loading the download page ({manual_url})")
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +191,10 @@ async def _find_content_frame(page: Page) -> Frame:
     """Return the frame that contains the OpenVPN accordion content.
 
     The setup page embeds its main content in an iframe, and that iframe
-    may take a moment to load after the Manual Config tab is clicked.
-    We poll every 0.5 s for up to 10 s waiting for any frame's innerText
-    to contain "Americas" (the first region name on the accordion page).
-    If nothing is found within the timeout we print a per-frame diagnostic
-    dump and fall back to the main frame so the caller can still try.
+    may take a moment to load after navigation. We poll every 0.5 s for
+    up to 10 s waiting for any frame's innerText to contain "Americas"
+    (the first region name on the accordion page). Falls back to the main
+    frame if nothing is found within the timeout.
     """
     for _ in range(20):  # 20 attempts x 0.5 s = 10 s max wait
         for frame in page.frames:
@@ -214,18 +206,6 @@ async def _find_content_frame(page: Page) -> Frame:
                 continue
         await asyncio.sleep(0.5)
 
-    # Timed out - dump what is in each frame to help diagnose the problem
-    print(f"  Content frame not found after 10 s ({len(page.frames)} frame(s) checked):")
-    for i, frame in enumerate(page.frames):
-        try:
-            text = await frame.evaluate(
-                "() => document.body ? document.body.innerText.trim().slice(0, 120) : '(no body)'"
-            )
-            print(f"    frame {i} [{frame.url[:60]}]: {text!r}")
-        except Exception as exc:
-            print(f"    frame {i} [{frame.url[:60]}]: error - {exc}")
-
-    print("  Falling back to main frame.")
     return page.main_frame
 
 
@@ -286,25 +266,6 @@ async def _click_regions_and_collect(page: Page) -> list[tuple[str, str]]:
     return pairs
 
 
-async def _scrape_links_from_frame(frame: Frame) -> list[tuple[str, str]]:
-    """Fallback scan of the frame for any custom_installer or .ovpn links.
-
-    Used when the region-click approach yields nothing (e.g. if the page
-    layout changes and the accordion is not present). Returns (url, label)
-    pairs with an empty label string when no visible text is available.
-    """
-    pairs: list[tuple[str, str]] = []
-
-    anchors = await frame.locator("a[href*='custom_installer'], a[href$='.ovpn']").all()
-    for anchor in anchors:
-        href = await anchor.get_attribute("href")
-        if href:
-            label = (await anchor.inner_text()).strip()
-            pairs.append((href, label))
-
-    return pairs
-
-
 async def collect_ovpn_links(page: Page) -> list[tuple[str, str]]:
     """Return a deduplicated list of (url, label) pairs for every server location.
 
@@ -315,9 +276,6 @@ async def collect_ovpn_links(page: Page) -> list[tuple[str, str]]:
     after their panel is opened, so we click each region header in turn and
     collect after each click.
 
-    Falls back to a direct single-pass scan if the accordion click approach
-    yields nothing (e.g. if the page layout changes).
-
     The label is the visible location name (e.g. "USA - NEW YORK") and is
     used to derive the .ovpn filename via label_to_filename().
     """
@@ -325,12 +283,6 @@ async def collect_ovpn_links(page: Page) -> list[tuple[str, str]]:
 
     print("Collecting server list...")
     pairs = await _click_regions_and_collect(page)
-
-    if not pairs:
-        # Accordion approach found nothing - try a direct scan of the frame.
-        print("Warning: accordion scan found nothing, falling back to direct page scan.")
-        frame = await _find_content_frame(page)
-        pairs = await _scrape_links_from_frame(frame)
 
     # Resolve any relative hrefs and deduplicate by URL
     normalized = [(normalize_url(url, current_origin), label) for url, label in pairs]
@@ -355,7 +307,7 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
     Each URL is fetched using the page's authenticated session (which holds
     the portal cookies). The server returns the raw .ovpn file content.
     The destination filename is derived from the server location label
-    (e.g. "USA - NEW YORK" -> "usa-new-york.ovpn").
+    (e.g. "USA - NEW YORK" -> "usa_-_new_york.ovpn").
 
     A rich progress bar shows the current filename, overall progress, and
     an estimated time to completion that updates as each file is fetched.
@@ -512,18 +464,3 @@ def label_to_filename(label: str) -> str:
     name = re.sub(r"[^a-z0-9_-]+", "_", name)
     name = name.strip("_")
     return name + ".ovpn"
-
-
-def deduplicate(items: list[str]) -> list[str]:
-    """Return a list with duplicates removed, preserving original order.
-
-    >>> deduplicate(["a", "b", "a", "c"])
-    ['a', 'b', 'c']
-    """
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
