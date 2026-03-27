@@ -11,9 +11,9 @@
 #   - find_ovpn_download_page() navigates to /setup and confirms the page
 #     has .ovpn links or accordion sections containing them.
 #   - collect_ovpn_links() handles the exclusive accordion on the setup page:
-#     it clicks each section toggle in turn, harvests links after each, then
-#     deduplicates across all sections. Falls back to a direct scan if no
-#     accordion is present.
+#     it first finds the iframe that contains the accordion (the page uses
+#     multiple frames, with the accordion in a child frame), then clicks each
+#     region header in turn and harvests links after each click.
 #   - download_ovpn_files() triggers each download via an injected <a> element
 #     (matching real browser behaviour) with an authenticated-request fallback.
 #
@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from playwright.async_api import Page
+from playwright.async_api import Frame, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 # The public marketing site - used as the entry point for navigation
@@ -223,31 +223,43 @@ async def find_ovpn_download_page(page: Page) -> bool:
 REGION_NAMES = ["Americas", "Europe", "Asia Pacific", "Middle East & Africa"]
 
 
-async def _click_regions_and_collect(page: Page) -> list[str]:
-    """Find and click each continent section header using JavaScript.
+async def _find_content_frame(page: Page) -> Frame:
+    """Return the frame that contains the OpenVPN accordion content.
 
-    When Playwright locators cannot find the region toggle elements (because
-    they may be plain divs or other non-semantic elements), we fall back to
-    a JavaScript DOM walk that finds elements whose trimmed text exactly
-    matches one of the four continent names, clicks each one in turn, and
-    collects .ovpn links after each click.
+    The setup page embeds its main content in an iframe, so the accordion
+    region headers and .ovpn links are not in the top-level document. We
+    check each frame's text for a known region name and return the first
+    match. Falls back to the main frame if nothing is found.
+    """
+    for frame in page.frames:
+        try:
+            text = await frame.evaluate("() => document.body ? document.body.innerText : ''")
+            if "Americas" in text:
+                print(f"  Content frame found: {frame.url[:60]}")
+                return frame
+        except Exception:
+            continue
+    print("  Content frame not found - falling back to main frame.")
+    return page.main_frame
+
+
+async def _click_regions_and_collect(page: Page) -> list[str]:
+    """Find the content frame, then click each continent section header.
+
+    The setup page renders its accordion inside a child iframe, not in the
+    top-level document. We find that frame first, then use a JavaScript DOM
+    walk within it to click each region header and collect .ovpn links.
 
     Returns a flat list of raw hrefs collected across all regions.
     """
     raw_hrefs: list[str] = []
 
-    # Diagnostic - print the first 800 chars of visible page text and
-    # the number of iframes so we can see what has actually rendered.
-    page_text = await page.evaluate("() => document.body.innerText.trim().substring(0, 800)")
-    frame_count = len(page.frames)
-    print(f"  [diag] frames={frame_count}, page text snippet:")
-    print(f"  {page_text[:400]}")
-    print("  ---")
+    frame = await _find_content_frame(page)
 
     for name in REGION_NAMES:
-        # Walk the full DOM and click the first element whose trimmed
-        # innerText equals the target region name exactly.
-        clicked = await page.evaluate(
+        # Walk the DOM of the content frame and click the element whose
+        # trimmed text exactly matches the region name.
+        clicked = await frame.evaluate(
             """name => {
                 const walker = document.createTreeWalker(
                     document.body, NodeFilter.SHOW_ELEMENT
@@ -268,28 +280,28 @@ async def _click_regions_and_collect(page: Page) -> list[str]:
         if clicked:
             print(f"  Clicked '{name}' ({clicked}) - collecting links...")
             await asyncio.sleep(0.5)
-            raw_hrefs.extend(await _scrape_links_from_current_view(page))
+            raw_hrefs.extend(await _scrape_links_from_frame(frame))
         else:
             print(f"  Could not find section header for '{name}'")
 
     return raw_hrefs
 
 
-async def _scrape_links_from_current_view(page: Page) -> list[str]:
-    """Collect all .ovpn hrefs visible in the current DOM state.
+async def _scrape_links_from_frame(frame: Frame) -> list[str]:
+    """Collect all .ovpn hrefs visible in the given frame's current DOM state.
 
     Checks both standard anchor hrefs and data-href / data-url attributes.
     Returns raw hrefs (may be relative) - the caller normalises them.
     """
     hrefs: list[str] = []
 
-    anchors = await page.locator("a[href$='.ovpn']").all()
+    anchors = await frame.locator("a[href$='.ovpn']").all()
     for anchor in anchors:
         href = await anchor.get_attribute("href")
         if href:
             hrefs.append(href)
 
-    data_els = await page.locator("[data-href$='.ovpn'], [data-url$='.ovpn']").all()
+    data_els = await frame.locator("[data-href$='.ovpn'], [data-url$='.ovpn']").all()
     for el in data_els:
         href = await el.get_attribute("data-href") or await el.get_attribute("data-url")
         if href:
@@ -325,9 +337,11 @@ async def collect_ovpn_links(page: Page) -> list[str]:
     if js_hrefs:
         raw_hrefs.extend(js_hrefs)
     else:
-        # JS approach found nothing either - fall back to a direct scan
+        # JS approach found nothing - fall back to a direct scan of the
+        # content frame (in case the page layout has changed).
         print("No region sections clicked - scanning page directly.")
-        raw_hrefs.extend(await _scrape_links_from_current_view(page))
+        frame = await _find_content_frame(page)
+        raw_hrefs.extend(await _scrape_links_from_frame(frame))
 
     absolute = [normalize_url(h, current_origin) for h in raw_hrefs]
     return deduplicate(absolute)
