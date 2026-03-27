@@ -17,6 +17,7 @@
 
 import asyncio
 import os
+import signal
 import sys
 
 from playwright.async_api import async_playwright
@@ -57,6 +58,12 @@ def _print_banner() -> None:
 
 
 async def main():
+    # asyncio.run() installs its own SIGINT handler that defers KeyboardInterrupt
+    # until the event loop can process it. During blocking input() calls the
+    # loop is stalled, so the first Ctrl+C gets swallowed. Restoring Python's
+    # default handler makes Ctrl+C raise KeyboardInterrupt immediately.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
     _print_banner()
 
     async with async_playwright() as pw:
