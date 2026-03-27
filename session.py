@@ -376,6 +376,7 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
     )
 
     interrupted = False
+    current_dest: Path | None = None
 
     with progress:
         task = progress.add_task("", total=total, filename="")
@@ -392,17 +393,23 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
                     # No delay - skipped files don't hit the network
                     continue
 
+                # Track which file is in-flight so we can remove it if the
+                # download is interrupted before the write completes.
+                current_dest = dest
                 t0 = time.monotonic()
                 try:
                     response = await page.request.get(url)
                     if response.ok:
                         dest.write_bytes(await response.body())
+                        current_dest = None  # write completed successfully
                     else:
+                        current_dest = None
                         failed += 1
                         progress.console.print(
                             f"  [yellow]Failed ({response.status}):[/yellow] {filename}"
                         )
                 except Exception as exc:
+                    current_dest = None
                     failed += 1
                     progress.console.print(f"  [red]Error:[/red] {filename} - {exc}")
 
@@ -416,8 +423,10 @@ async def download_ovpn_files(page: Page, links: list[tuple[str, str]]) -> None:
                     await asyncio.sleep(remaining)
 
         except KeyboardInterrupt:
-            # Progress bar context manager closes cleanly before we print,
+            # Remove any partially written file before closing the progress bar
             # so the terminal is left in a tidy state.
+            if current_dest is not None and current_dest.exists():
+                current_dest.unlink()
             interrupted = True
 
     if interrupted:
