@@ -1,11 +1,16 @@
-# Copyright (c) 2026 senjinthedragon
-# Licensed under the MIT License - see LICENSE file for details.
+# scraper.py - ExpressVPN OVPN Scraper: Browser Entry Point and Orchestration
+# Copyright (c) 2026 Senjin the Dragon.
+# https://github.com/senjinthedragon/ExpressVPNScraper
+# Licensed under the MIT License.
+# See /LICENSE for full license information.
 #
-# scraper.py - Main entry point for the ExpressVPN .ovpn config scraper.
-#
-# Launches a real (headed) Chromium browser, walks through the ExpressVPN
-# email-OTP login flow with user input, then navigates to the config
-# download page and saves every .ovpn file it finds.
+# Launches a headed Chromium browser and orchestrates the four-step scrape:
+#   - login() prompts for email and OTP code, fills them into the live browser
+#     so the resulting session is indistinguishable from a real user login.
+#   - find_ovpn_download_page() navigates to the config download page
+#     automatically, or pauses and asks the user to do it manually.
+#   - collect_ovpn_links() harvests every .ovpn URL from the page.
+#   - download_ovpn_files() saves each file to ovpn_files/ on disk.
 #
 # Usage:
 #   .venv/bin/python scraper.py

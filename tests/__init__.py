@@ -1,4 +1,8 @@
-# Copyright (c) 2026 senjinthedragon
-# Licensed under the MIT License - see LICENSE file for details.
+# tests/__init__.py - ExpressVPN OVPN Scraper: Test Package Marker
+# Copyright (c) 2026 Senjin the Dragon.
+# https://github.com/senjinthedragon/ExpressVPNScraper
+# Licensed under the MIT License.
+# See /LICENSE for full license information.
 #
-# tests/__init__.py - Makes the tests directory a Python package.
+# Empty init file that makes the tests/ directory a Python package so
+# pytest can discover and import the test modules inside it.

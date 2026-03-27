@@ -1,13 +1,22 @@
-# Copyright (c) 2026 senjinthedragon
-# Licensed under the MIT License - see LICENSE file for details.
+# session.py - ExpressVPN OVPN Scraper: Browser Session and Download Logic
+# Copyright (c) 2026 Senjin the Dragon.
+# https://github.com/senjinthedragon/ExpressVPNScraper
+# Licensed under the MIT License.
+# See /LICENSE for full license information.
 #
-# session.py - Browser session management for the ExpressVPN scraper.
+# Contains all Playwright-driven browser logic and the pure helper functions
+# that support it:
+#   - login() walks the email-OTP flow, handling both a single code input
+#     and the individual-digit-box layout that some browsers get.
+#   - find_ovpn_download_page() tries a list of known candidate URLs in order,
+#     then falls back to scanning the current page for config/setup links.
+#   - collect_ovpn_links() scrapes anchor hrefs and data-href / data-url
+#     attributes, normalises relative URLs, and deduplicates the result.
+#   - download_ovpn_files() triggers each download via an injected <a> element
+#     (matching real browser behaviour) with an authenticated-request fallback.
 #
-# Contains all Playwright-driven logic: logging in via email OTP,
-# finding the .ovpn download page, collecting download links, and
-# saving the files to disk. Pure helper functions (URL normalisation,
-# filename extraction, deduplication) are kept at the bottom of this
-# file so they can be unit-tested without a live browser.
+# Pure helpers at the bottom of the file (normalize_url, filename_from_url,
+# deduplicate) have no browser dependency and are covered by unit tests.
 
 import asyncio
 import re

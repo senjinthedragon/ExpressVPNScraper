@@ -1,10 +1,15 @@
-# Copyright (c) 2026 senjinthedragon
-# Licensed under the MIT License - see LICENSE file for details.
+# tests/test_helpers.py - ExpressVPN OVPN Scraper: Helper Function Unit Tests
+# Copyright (c) 2026 Senjin the Dragon.
+# https://github.com/senjinthedragon/ExpressVPNScraper
+# Licensed under the MIT License.
+# See /LICENSE for full license information.
 #
-# tests/test_helpers.py - Unit tests for the pure helper functions in session.py.
-#
-# These tests cover the URL and filename utilities that have no browser
-# dependency and can be verified quickly without launching Playwright.
+# Unit tests for the three pure helper functions exported by session.py.
+# None of these tests require a browser or network access - they run
+# entirely in-process and finish in milliseconds.
+#   - TestNormalizeUrl  covers absolute passthrough and relative resolution.
+#   - TestFilenameFromUrl  covers path extraction and query-string stripping.
+#   - TestDeduplicate  covers ordering guarantees and full-URL deduplication.
 
 
 from session import deduplicate, filename_from_url, normalize_url
