@@ -174,11 +174,18 @@ async def find_ovpn_download_page(page: Page) -> bool:
     else:
         print("Manual tab not found - page may already be on the right section.")
 
-    # Confirm we can see either direct .ovpn links or continent section headers
+    # Trust the URL - if we landed on #manual the page is correct.
+    # Link detection happens in collect_ovpn_links, not here.
+    if "manual" in page.url.lower():
+        print("Manual config section ready.")
+        return True
+
+    # If the URL does not have #manual yet, check for direct links or
+    # region headers as a fallback confirmation.
     has_links = await page.locator("a[href$='.ovpn']").count() > 0
     has_regions = await _find_region_toggles(page).count() > 0
     if has_links or has_regions:
-        print("Manual config section ready.")
+        print("Config page ready.")
         return True
 
     print(f"Could not confirm manual config section. Current URL: {page.url}")
@@ -194,16 +201,18 @@ def _find_region_toggles(page: Page):
     """Return a locator for the continent/region accordion section headers.
 
     The manual-config section groups servers by region. Each region header
-    is a clickable element (button, summary, or similar) whose visible text
-    contains a continent name. We match by text so the selector stays correct
-    even if ExpressVPN changes the surrounding markup.
+    is a clickable element whose visible text is exactly a continent name.
+    We cast a wide net over element types (div, li, button, span, etc.)
+    because the portal may use plain div/li elements with click handlers
+    rather than semantic button or summary elements.
     """
+    # Exact-match the four continent group names used on the setup page.
+    # Using anchors (^...$) avoids matching inner expanded content that
+    # also contains these words.
     continent_pattern = re.compile(
-        r"Americas|Europe|Asia.Pacific|Middle.East|Africa", re.IGNORECASE
+        r"^(Americas|Europe|Asia Pacific|Middle East & Africa)$", re.IGNORECASE
     )
-    # Match <details>/<summary> elements and button-like elements - whichever
-    # pattern ExpressVPN uses, one of these will catch the continent headers.
-    return page.locator("details > summary, button, [role='button']").filter(
+    return page.locator("button, [role='button'], summary, div, li, span, h2, h3, h4, dt").filter(
         has_text=continent_pattern
     )
 
@@ -248,6 +257,7 @@ async def collect_ovpn_links(page: Page) -> list[str]:
     current_origin = base_origin(page.url)
 
     region_toggles = await _find_region_toggles(page).all()
+    print(f"Region toggles found: {len(region_toggles)}")
 
     if region_toggles:
         # Exclusive accordion - open each region in turn and collect its links
