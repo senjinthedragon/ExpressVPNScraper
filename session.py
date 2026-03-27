@@ -137,72 +137,75 @@ async def login(page: Page) -> None:
 
 
 async def find_ovpn_download_page(page: Page) -> bool:
-    """Navigate to the /setup page on the portal.
+    """Navigate to the manual-config section of the portal setup page.
 
-    The manual-config page (portal.expressvpn.com/setup) contains per-region
-    accordion sections that each hold .ovpn download links. The portal appends
-    the subscription_id query parameter automatically for authenticated sessions,
-    so navigating to just /setup is sufficient.
+    The setup page has tabs for different platforms (Linux, Windows, etc.)
+    and a manual-config tab (hash #manual) that contains the per-region
+    accordion sections with .ovpn download links.
 
-    Returns True if the page loaded and contains either direct .ovpn links
-    or accordion toggles (meaning collect_ovpn_links can harvest them).
-    Falls back to the broader candidate list then returns False so the caller
-    can ask the user to navigate manually.
+    Steps:
+      1. Navigate to /setup on the portal.
+      2. Find and click the Manual Config tab to reach the #manual section.
+      3. Confirm the right section is active by checking for continent-named
+         sections or direct .ovpn links.
+
+    Returns True if the manual-config section is ready for link harvesting.
+    Returns False if navigation fails so the caller can ask the user to
+    navigate manually.
     """
-    # Try the known setup page first - fastest and most reliable path
     setup_url = PORTAL_URL + "/setup"
     print(f"Navigating to {setup_url} ...")
     try:
         response = await page.goto(setup_url, wait_until="domcontentloaded", timeout=15_000)
-        if response and response.ok:
-            # The page is correct if it has direct links OR accordion toggles
-            # (links only appear after sections are opened by collect_ovpn_links)
-            has_links = await page.locator("a[href$='.ovpn']").count() > 0
-            has_accordions = await page.locator("[aria-expanded]").count() > 0
-            if has_links or has_accordions:
-                print("Setup page loaded successfully.")
-                return True
+        if not (response and response.ok):
+            return False
     except PlaywrightTimeoutError:
-        pass
+        return False
 
-    # /setup did not work - try the remaining candidate URLs
-    for base, path in DOWNLOAD_PAGE_CANDIDATES:
-        url = base + path
-        if url == setup_url:
-            continue  # already tried above
-        print(f"Trying {url} ...")
-        try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
-        except PlaywrightTimeoutError:
-            continue
+    # The setup page has OS/platform tabs. Find and click the one for
+    # manual OpenVPN configuration so we land in the right section.
+    manual_tab = page.get_by_role("link", name=re.compile(r"manual", re.IGNORECASE))
+    if not await manual_tab.count():
+        manual_tab = page.get_by_role("tab", name=re.compile(r"manual", re.IGNORECASE))
+    if await manual_tab.count():
+        print("Clicking Manual Config tab...")
+        await manual_tab.first.click()
+        await asyncio.sleep(0.5)
+    else:
+        print("Manual tab not found - page may already be on the right section.")
 
-        if response and response.ok:
-            has_links = await page.locator("a[href$='.ovpn']").count() > 0
-            has_accordions = await page.locator("[aria-expanded]").count() > 0
-            if has_links or has_accordions:
-                print(f"Found config page at {url}")
-                return True
+    # Confirm we can see either direct .ovpn links or continent section headers
+    has_links = await page.locator("a[href$='.ovpn']").count() > 0
+    has_regions = await _find_region_toggles(page).count() > 0
+    if has_links or has_regions:
+        print("Manual config section ready.")
+        return True
 
-    # None of the candidates worked - look for a config/setup nav link on
-    # whatever page we are currently on and follow it.
-    print("Searching current page for config or setup links...")
-    config_link = page.get_by_role(
-        "link",
-        name=re.compile(r"openvpn|config|manual setup", re.IGNORECASE),
-    )
-    if await config_link.count() > 0:
-        await config_link.first.click()
-        await page.wait_for_load_state("domcontentloaded")
-        has_links = await page.locator("a[href$='.ovpn']").count() > 0
-        has_accordions = await page.locator("[aria-expanded]").count() > 0
-        return has_links or has_accordions
-
+    print(f"Could not confirm manual config section. Current URL: {page.url}")
     return False
 
 
 # ---------------------------------------------------------------------------
 # Link collection
 # ---------------------------------------------------------------------------
+
+
+def _find_region_toggles(page: Page):
+    """Return a locator for the continent/region accordion section headers.
+
+    The manual-config section groups servers by region. Each region header
+    is a clickable element (button, summary, or similar) whose visible text
+    contains a continent name. We match by text so the selector stays correct
+    even if ExpressVPN changes the surrounding markup.
+    """
+    continent_pattern = re.compile(
+        r"Americas|Europe|Asia.Pacific|Middle.East|Africa", re.IGNORECASE
+    )
+    # Match <details>/<summary> elements and button-like elements - whichever
+    # pattern ExpressVPN uses, one of these will catch the continent headers.
+    return page.locator("details > summary, button, [role='button']").filter(
+        has_text=continent_pattern
+    )
 
 
 async def _scrape_links_from_current_view(page: Page) -> list[str]:
@@ -231,11 +234,12 @@ async def _scrape_links_from_current_view(page: Page) -> list[str]:
 async def collect_ovpn_links(page: Page) -> list[str]:
     """Return a deduplicated list of absolute .ovpn download URLs.
 
-    The /setup page uses an exclusive accordion where only one region panel
-    (Americas, Europe, etc.) can be open at a time. Links only appear in the
-    DOM when their panel is open, so we click each toggle in turn and harvest
-    links after each one. If no accordion is present (plain link list) we do
-    a straightforward single-pass scan instead.
+    The manual-config section uses an exclusive accordion where only one
+    region panel (Americas, Europe, Asia Pacific, Middle East & Africa) can
+    be open at a time. Links only appear in the DOM after their panel is
+    opened, so we click each region header in turn and harvest links after
+    each click. Falls back to a direct single-pass scan if no region headers
+    are found (in case the page layout changes).
 
     Relative hrefs are resolved against the current page's origin so they
     work correctly whether we are on the portal or the main site.
@@ -243,22 +247,23 @@ async def collect_ovpn_links(page: Page) -> list[str]:
     raw_hrefs: list[str] = []
     current_origin = base_origin(page.url)
 
-    # Check for accordion toggles - elements with an aria-expanded attribute
-    toggles = await page.locator("[aria-expanded]").all()
+    region_toggles = await _find_region_toggles(page).all()
 
-    if toggles:
-        # Exclusive accordion - open each section in turn and collect its links
-        print(f"Found {len(toggles)} accordion section(s) - iterating through each.")
-        for toggle in toggles:
+    if region_toggles:
+        # Exclusive accordion - open each region in turn and collect its links
+        print(f"Found {len(region_toggles)} region section(s) - iterating through each.")
+        for toggle in region_toggles:
             try:
+                label = await toggle.inner_text()
+                print(f"  Opening section: {label.strip()}")
                 await toggle.click()
-                # Wait for the panel animation to settle before scanning
                 await asyncio.sleep(0.5)
             except Exception:
                 continue
             raw_hrefs.extend(await _scrape_links_from_current_view(page))
     else:
-        # No accordion - all links should be directly in the DOM
+        # No region accordion found - try a direct scan of all links on the page
+        print("No region sections found - scanning page directly.")
         raw_hrefs.extend(await _scrape_links_from_current_view(page))
 
     absolute = [normalize_url(h, current_origin) for h in raw_hrefs]
