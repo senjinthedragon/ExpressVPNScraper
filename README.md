@@ -75,7 +75,18 @@ pip install -r requirements-dev.txt
 
 ## Usage
 
+Activate the virtual environment first, then run the script:
+
 ```bash
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
+
+# fish shell
+source .venv/bin/activate.fish
+
 python scraper.py [FILTER] [--country CODE]
 ```
 
