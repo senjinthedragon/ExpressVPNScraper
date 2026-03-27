@@ -114,8 +114,13 @@ _BANNER_WIDTH = 70
 
 
 def _parse_args() -> argparse.Namespace:
+    code_entries = [f"{code}={name}" for code, name in sorted(COUNTRY_CODES.items())]
+    # Wrap into rows of 4 entries each for readable --help output
+    rows = ["  ".join(code_entries[i : i + 4]) for i in range(0, len(code_entries), 4)]
     parser = argparse.ArgumentParser(
         description="Download ExpressVPN .ovpn config files.",
+        epilog="Supported country codes:\n  " + "\n  ".join(rows),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "filter",
