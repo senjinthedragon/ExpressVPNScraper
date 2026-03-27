@@ -58,6 +58,7 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+> [!TIP]
 > **Raspberry Pi / headless Linux**: Chromium runs fine without a display
 > server. If you get errors about missing system libraries, install them with:
 >
