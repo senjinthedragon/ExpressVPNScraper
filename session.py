@@ -226,20 +226,36 @@ REGION_NAMES = ["Americas", "Europe", "Asia Pacific", "Middle East & Africa"]
 async def _find_content_frame(page: Page) -> Frame:
     """Return the frame that contains the OpenVPN accordion content.
 
-    The setup page embeds its main content in an iframe, so the accordion
-    region headers and .ovpn links are not in the top-level document. We
-    check each frame's text for a known region name and return the first
-    match. Falls back to the main frame if nothing is found.
+    The setup page embeds its main content in an iframe, and that iframe
+    may take a moment to load after the Manual Config tab is clicked.
+    We poll every 0.5 s for up to 10 s waiting for any frame's innerText
+    to contain "Americas" (the first region name on the accordion page).
+    If nothing is found within the timeout we print a per-frame diagnostic
+    dump and fall back to the main frame so the caller can still try.
     """
-    for frame in page.frames:
+    for _ in range(20):  # 20 attempts x 0.5 s = 10 s max wait
+        for frame in page.frames:
+            try:
+                text = await frame.evaluate("() => document.body ? document.body.innerText : ''")
+                if "Americas" in text:
+                    print(f"  Content frame found: {frame.url[:80]}")
+                    return frame
+            except Exception:
+                continue
+        await asyncio.sleep(0.5)
+
+    # Timed out - dump what is in each frame to help diagnose the problem
+    print(f"  Content frame not found after 10 s ({len(page.frames)} frame(s) checked):")
+    for i, frame in enumerate(page.frames):
         try:
-            text = await frame.evaluate("() => document.body ? document.body.innerText : ''")
-            if "Americas" in text:
-                print(f"  Content frame found: {frame.url[:60]}")
-                return frame
-        except Exception:
-            continue
-    print("  Content frame not found - falling back to main frame.")
+            text = await frame.evaluate(
+                "() => document.body ? document.body.innerText.trim().slice(0, 120) : '(no body)'"
+            )
+            print(f"    frame {i} [{frame.url[:60]}]: {text!r}")
+        except Exception as exc:
+            print(f"    frame {i} [{frame.url[:60]}]: error - {exc}")
+
+    print("  Falling back to main frame.")
     return page.main_frame
 
 
