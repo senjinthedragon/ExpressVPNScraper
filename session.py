@@ -8,8 +8,10 @@
 # that support it:
 #   - login() walks the email-OTP flow, handling both a single code input
 #     and the individual-digit-box layout that some browsers get.
-#   - find_ovpn_download_page() tries a list of known candidate URLs in order,
-#     then falls back to scanning the current page for config/setup links.
+#   - find_ovpn_download_page() navigates to the /setup page and expands
+#     all accordion sections so every .ovpn link is present in the DOM.
+#   - expand_all_accordions() clicks every collapsed [aria-expanded=false]
+#     element to reveal the per-region download links.
 #   - collect_ovpn_links() scrapes anchor hrefs and data-href / data-url
 #     attributes, normalises relative URLs, and deduplicates the result.
 #   - download_ovpn_files() triggers each download via an injected <a> element
@@ -42,6 +44,9 @@ DOWNLOAD_DIR = Path("ovpn_files")
 # The portal paths are tried first since that is where the session lands
 # after login; the main-site paths are a fallback.
 DOWNLOAD_PAGE_CANDIDATES: list[tuple[str, str]] = [
+    # /setup is the manual config page - the portal appends the subscription_id
+    # query parameter automatically for authenticated sessions.
+    (PORTAL_URL, "/setup"),
     (PORTAL_URL, "/setup/manual"),
     (PORTAL_URL, "/vpn-configs"),
     (PORTAL_URL, "/downloads"),
@@ -131,25 +136,67 @@ async def login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def find_ovpn_download_page(page: Page) -> bool:
-    """Try to navigate to the page that lists .ovpn download links.
+async def expand_all_accordions(page: Page) -> None:
+    """Click every collapsed accordion section on the current page.
 
-    First checks the page we are already on (the post-login landing page
-    may already contain download links). Then tries each candidate URL
-    in DOWNLOAD_PAGE_CANDIDATES. Finally scans the current page for any
-    navigation link that looks like a config or setup section.
-
-    Returns True as soon as .ovpn links are found, False if nothing works
-    so the caller can ask the user to navigate manually.
+    The /setup page groups download links by region (Americas, Europe, etc.)
+    inside accordion panels. Each panel uses aria-expanded="false" when
+    collapsed, so we find and click all of them in sequence. The links are
+    only injected into the DOM after their panel is open, which is why we
+    must expand everything before scanning for .ovpn hrefs.
     """
-    # Check the post-login landing page before navigating anywhere else
-    landing_links = await page.locator("a[href$='.ovpn']").all()
-    if landing_links:
-        print(f"Found {len(landing_links)} .ovpn link(s) on the post-login page.")
-        return True
+    # Keep clicking collapsed sections until there are none left - handles
+    # the case where expanding one panel reveals nested collapsed panels.
+    for _ in range(10):
+        collapsed = await page.locator("[aria-expanded='false']").all()
+        if not collapsed:
+            break
+        for el in collapsed:
+            try:
+                await el.click()
+                # Brief pause so the panel animation can finish and the DOM
+                # can settle before we look for newly revealed elements.
+                await asyncio.sleep(0.3)
+            except Exception:
+                # Skip any element that is not clickable (e.g. hidden or
+                # covered by an overlay) and move on to the next.
+                pass
 
+
+async def find_ovpn_download_page(page: Page) -> bool:
+    """Navigate to the /setup page and expand all accordion sections.
+
+    The portal's manual-config page (portal.expressvpn.com/setup) groups
+    .ovpn download links inside per-region accordion panels. The links do
+    not exist in the DOM until the panels are opened, so this function:
+      1. Navigates to /setup (the portal appends the subscription_id
+         automatically for authenticated sessions).
+      2. Calls expand_all_accordions() to open every panel.
+      3. Verifies that .ovpn links are now present.
+
+    Falls back to the broader candidate list if /setup is unreachable,
+    and returns False if nothing works so the caller can ask the user to
+    navigate manually.
+    """
+    # Try the known setup page first - fastest path
+    setup_url = PORTAL_URL + "/setup"
+    print(f"Navigating to {setup_url} ...")
+    try:
+        response = await page.goto(setup_url, wait_until="domcontentloaded", timeout=15_000)
+        if response and response.ok:
+            await expand_all_accordions(page)
+            links = await page.locator("a[href$='.ovpn']").all()
+            if links:
+                print(f"Found {len(links)} .ovpn link(s) after expanding accordions.")
+                return True
+    except PlaywrightTimeoutError:
+        pass
+
+    # /setup did not work - try the remaining candidate URLs
     for base, path in DOWNLOAD_PAGE_CANDIDATES:
         url = base + path
+        if url == setup_url:
+            continue  # already tried above
         print(f"Trying {url} ...")
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
@@ -157,13 +204,14 @@ async def find_ovpn_download_page(page: Page) -> bool:
             continue
 
         if response and response.ok:
+            await expand_all_accordions(page)
             links = await page.locator("a[href$='.ovpn']").all()
             if links:
                 print(f"Found {len(links)} .ovpn link(s) at {url}")
                 return True
 
-    # None of the candidate paths worked - look for a navigation link on
-    # whatever page we landed on after login.
+    # None of the candidates worked - look for a config/setup nav link on
+    # whatever page we are currently on and follow it.
     print("Searching current page for config or setup links...")
     config_link = page.get_by_role(
         "link",
@@ -172,7 +220,8 @@ async def find_ovpn_download_page(page: Page) -> bool:
     if await config_link.count() > 0:
         await config_link.first.click()
         await page.wait_for_load_state("domcontentloaded")
-        return True
+        await expand_all_accordions(page)
+        return await page.locator("a[href$='.ovpn']").count() > 0
 
     return False
 
