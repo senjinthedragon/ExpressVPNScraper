@@ -7,8 +7,9 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Pytest cache
+# Pytest and linter caches
 .pytest_cache/
+.ruff_cache/
 .coverage
 
 # Downloaded config files - these are personal and should not be committed
