@@ -118,8 +118,11 @@ async def login(page: Page) -> None:
     )
     await confirm.first.click()
 
+    # Wait for the portal redirect to complete. We use "load" rather than
+    # "networkidle" because the portal keeps background requests running
+    # indefinitely (analytics, popups, etc.) and networkidle never fires.
     print("Waiting for login to complete...")
-    await page.wait_for_load_state("networkidle", timeout=15_000)
+    await page.wait_for_load_state("load", timeout=30_000)
     print(f"Logged in. Current URL: {page.url}")
 
 
