@@ -136,25 +136,54 @@ async def login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _find_subscription_setup_url(page: Page) -> str | None:
+    """Look for the subscription-specific setup URL on the current portal page.
+
+    The portal setup page requires a subscription_id query parameter to show
+    the OpenVPN manual-config section with per-region .ovpn download links.
+    Without it, the page shows a generic activation-code view instead.
+
+    The portal dashboard always includes navigation links that carry the
+    correct subscription_id, so we find one here rather than constructing
+    the URL ourselves.
+    """
+    links = await page.locator("a[href*='subscription_id']").all()
+    for link in links:
+        href = await link.get_attribute("href")
+        if href and "setup" in href:
+            return normalize_url(href, PORTAL_URL)
+    return None
+
+
 async def find_ovpn_download_page(page: Page) -> bool:
     """Navigate to the manual-config section of the portal setup page.
 
-    The setup page has tabs for different platforms (Linux, Windows, etc.)
-    and a manual-config tab (hash #manual) that contains the per-region
-    accordion sections with .ovpn download links.
+    The setup page URL must include the account's subscription_id parameter
+    or it shows a generic device-setup page instead of the OpenVPN config
+    section. We discover the correct URL from the portal navigation links
+    rather than constructing it manually.
 
     Steps:
-      1. Navigate to /setup on the portal.
-      2. Find and click the Manual Config tab to reach the #manual section.
-      3. Confirm the right section is active by checking for continent-named
-         sections or direct .ovpn links.
+      1. Find a setup link on the current portal page that includes the
+         subscription_id and navigate to it.
+      2. Click the Manual Config tab to reach the #manual section.
+      3. Return True if the URL contains #manual (confirming the right
+         section loaded).
 
-    Returns True if the manual-config section is ready for link harvesting.
     Returns False if navigation fails so the caller can ask the user to
     navigate manually.
     """
-    setup_url = PORTAL_URL + "/setup"
-    print(f"Navigating to {setup_url} ...")
+    # Find the subscription-specific setup link from the portal dashboard.
+    # This avoids hard-coding a URL structure that includes a private ID.
+    setup_url = await _find_subscription_setup_url(page)
+    if setup_url:
+        print("Found subscription setup URL, navigating...")
+    else:
+        # Fallback - try /setup without subscription_id, which may show a
+        # reduced view but might still work for some accounts.
+        setup_url = PORTAL_URL + "/setup"
+        print(f"No subscription link found, trying {setup_url} ...")
+
     try:
         response = await page.goto(setup_url, wait_until="domcontentloaded", timeout=15_000)
         if not (response and response.ok):
@@ -162,8 +191,8 @@ async def find_ovpn_download_page(page: Page) -> bool:
     except PlaywrightTimeoutError:
         return False
 
-    # The setup page has OS/platform tabs. Find and click the one for
-    # manual OpenVPN configuration so we land in the right section.
+    # The setup page has OS/platform tabs. Click the one for manual
+    # OpenVPN configuration to land on the #manual section.
     manual_tab = page.get_by_role("link", name=re.compile(r"manual", re.IGNORECASE))
     if not await manual_tab.count():
         manual_tab = page.get_by_role("tab", name=re.compile(r"manual", re.IGNORECASE))
@@ -174,14 +203,10 @@ async def find_ovpn_download_page(page: Page) -> bool:
     else:
         print("Manual tab not found - page may already be on the right section.")
 
-    # Trust the URL - if we landed on #manual the page is correct.
-    # Region detection happens in collect_ovpn_links, not here.
     if "manual" in page.url.lower():
         print("Manual config section ready.")
         return True
 
-    # If the URL does not have #manual yet, check for direct .ovpn links
-    # as a fallback confirmation.
     if await page.locator("a[href$='.ovpn']").count() > 0:
         print("Config page ready.")
         return True
@@ -210,6 +235,14 @@ async def _click_regions_and_collect(page: Page) -> list[str]:
     Returns a flat list of raw hrefs collected across all regions.
     """
     raw_hrefs: list[str] = []
+
+    # Diagnostic - print the first 800 chars of visible page text and
+    # the number of iframes so we can see what has actually rendered.
+    page_text = await page.evaluate("() => document.body.innerText.trim().substring(0, 800)")
+    frame_count = len(page.frames)
+    print(f"  [diag] frames={frame_count}, page text snippet:")
+    print(f"  {page_text[:400]}")
+    print("  ---")
 
     for name in REGION_NAMES:
         # Walk the full DOM and click the first element whose trimmed
