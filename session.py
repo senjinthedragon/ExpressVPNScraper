@@ -8,12 +8,12 @@
 # that support it:
 #   - login() walks the email-OTP flow, handling both a single code input
 #     and the individual-digit-box layout that some browsers get.
-#   - find_ovpn_download_page() navigates to the /setup page and expands
-#     all accordion sections so every .ovpn link is present in the DOM.
-#   - expand_all_accordions() clicks every collapsed [aria-expanded=false]
-#     element to reveal the per-region download links.
-#   - collect_ovpn_links() scrapes anchor hrefs and data-href / data-url
-#     attributes, normalises relative URLs, and deduplicates the result.
+#   - find_ovpn_download_page() navigates to /setup and confirms the page
+#     has .ovpn links or accordion sections containing them.
+#   - collect_ovpn_links() handles the exclusive accordion on the setup page:
+#     it clicks each section toggle in turn, harvests links after each, then
+#     deduplicates across all sections. Falls back to a direct scan if no
+#     accordion is present.
 #   - download_ovpn_files() triggers each download via an injected <a> element
 #     (matching real browser behaviour) with an authenticated-request fallback.
 #
@@ -136,58 +136,31 @@ async def login(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def expand_all_accordions(page: Page) -> None:
-    """Click every collapsed accordion section on the current page.
-
-    The /setup page groups download links by region (Americas, Europe, etc.)
-    inside accordion panels. Each panel uses aria-expanded="false" when
-    collapsed, so we find and click all of them in sequence. The links are
-    only injected into the DOM after their panel is open, which is why we
-    must expand everything before scanning for .ovpn hrefs.
-    """
-    # Keep clicking collapsed sections until there are none left - handles
-    # the case where expanding one panel reveals nested collapsed panels.
-    for _ in range(10):
-        collapsed = await page.locator("[aria-expanded='false']").all()
-        if not collapsed:
-            break
-        for el in collapsed:
-            try:
-                await el.click()
-                # Brief pause so the panel animation can finish and the DOM
-                # can settle before we look for newly revealed elements.
-                await asyncio.sleep(0.3)
-            except Exception:
-                # Skip any element that is not clickable (e.g. hidden or
-                # covered by an overlay) and move on to the next.
-                pass
-
-
 async def find_ovpn_download_page(page: Page) -> bool:
-    """Navigate to the /setup page and expand all accordion sections.
+    """Navigate to the /setup page on the portal.
 
-    The portal's manual-config page (portal.expressvpn.com/setup) groups
-    .ovpn download links inside per-region accordion panels. The links do
-    not exist in the DOM until the panels are opened, so this function:
-      1. Navigates to /setup (the portal appends the subscription_id
-         automatically for authenticated sessions).
-      2. Calls expand_all_accordions() to open every panel.
-      3. Verifies that .ovpn links are now present.
+    The manual-config page (portal.expressvpn.com/setup) contains per-region
+    accordion sections that each hold .ovpn download links. The portal appends
+    the subscription_id query parameter automatically for authenticated sessions,
+    so navigating to just /setup is sufficient.
 
-    Falls back to the broader candidate list if /setup is unreachable,
-    and returns False if nothing works so the caller can ask the user to
-    navigate manually.
+    Returns True if the page loaded and contains either direct .ovpn links
+    or accordion toggles (meaning collect_ovpn_links can harvest them).
+    Falls back to the broader candidate list then returns False so the caller
+    can ask the user to navigate manually.
     """
-    # Try the known setup page first - fastest path
+    # Try the known setup page first - fastest and most reliable path
     setup_url = PORTAL_URL + "/setup"
     print(f"Navigating to {setup_url} ...")
     try:
         response = await page.goto(setup_url, wait_until="domcontentloaded", timeout=15_000)
         if response and response.ok:
-            await expand_all_accordions(page)
-            links = await page.locator("a[href$='.ovpn']").all()
-            if links:
-                print(f"Found {len(links)} .ovpn link(s) after expanding accordions.")
+            # The page is correct if it has direct links OR accordion toggles
+            # (links only appear after sections are opened by collect_ovpn_links)
+            has_links = await page.locator("a[href$='.ovpn']").count() > 0
+            has_accordions = await page.locator("[aria-expanded]").count() > 0
+            if has_links or has_accordions:
+                print("Setup page loaded successfully.")
                 return True
     except PlaywrightTimeoutError:
         pass
@@ -204,10 +177,10 @@ async def find_ovpn_download_page(page: Page) -> bool:
             continue
 
         if response and response.ok:
-            await expand_all_accordions(page)
-            links = await page.locator("a[href$='.ovpn']").all()
-            if links:
-                print(f"Found {len(links)} .ovpn link(s) at {url}")
+            has_links = await page.locator("a[href$='.ovpn']").count() > 0
+            has_accordions = await page.locator("[aria-expanded]").count() > 0
+            if has_links or has_accordions:
+                print(f"Found config page at {url}")
                 return True
 
     # None of the candidates worked - look for a config/setup nav link on
@@ -220,8 +193,9 @@ async def find_ovpn_download_page(page: Page) -> bool:
     if await config_link.count() > 0:
         await config_link.first.click()
         await page.wait_for_load_state("domcontentloaded")
-        await expand_all_accordions(page)
-        return await page.locator("a[href$='.ovpn']").count() > 0
+        has_links = await page.locator("a[href$='.ovpn']").count() > 0
+        has_accordions = await page.locator("[aria-expanded]").count() > 0
+        return has_links or has_accordions
 
     return False
 
@@ -231,33 +205,62 @@ async def find_ovpn_download_page(page: Page) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def collect_ovpn_links(page: Page) -> list[str]:
-    """Return a deduplicated list of absolute .ovpn download URLs.
+async def _scrape_links_from_current_view(page: Page) -> list[str]:
+    """Collect all .ovpn hrefs visible in the current DOM state.
 
-    Checks both standard anchor hrefs and data attributes (data-href,
-    data-url) that some download buttons use instead of plain anchors.
-    Relative hrefs are resolved against the current page's origin so
-    they work correctly whether we are on the portal or the main site.
+    Checks both standard anchor hrefs and data-href / data-url attributes.
+    Returns raw hrefs (may be relative) - the caller normalises them.
     """
-    raw_hrefs: list[str] = []
+    hrefs: list[str] = []
 
-    # Standard <a href="...ovpn"> links
     anchors = await page.locator("a[href$='.ovpn']").all()
     for anchor in anchors:
         href = await anchor.get_attribute("href")
         if href:
-            raw_hrefs.append(href)
+            hrefs.append(href)
 
-    # Buttons or divs with data-href / data-url attributes
     data_els = await page.locator("[data-href$='.ovpn'], [data-url$='.ovpn']").all()
     for el in data_els:
         href = await el.get_attribute("data-href") or await el.get_attribute("data-url")
         if href:
-            raw_hrefs.append(href)
+            hrefs.append(href)
 
-    # Resolve relative hrefs against the domain we are currently on,
-    # not the hardcoded main site URL.
+    return hrefs
+
+
+async def collect_ovpn_links(page: Page) -> list[str]:
+    """Return a deduplicated list of absolute .ovpn download URLs.
+
+    The /setup page uses an exclusive accordion where only one region panel
+    (Americas, Europe, etc.) can be open at a time. Links only appear in the
+    DOM when their panel is open, so we click each toggle in turn and harvest
+    links after each one. If no accordion is present (plain link list) we do
+    a straightforward single-pass scan instead.
+
+    Relative hrefs are resolved against the current page's origin so they
+    work correctly whether we are on the portal or the main site.
+    """
+    raw_hrefs: list[str] = []
     current_origin = base_origin(page.url)
+
+    # Check for accordion toggles - elements with an aria-expanded attribute
+    toggles = await page.locator("[aria-expanded]").all()
+
+    if toggles:
+        # Exclusive accordion - open each section in turn and collect its links
+        print(f"Found {len(toggles)} accordion section(s) - iterating through each.")
+        for toggle in toggles:
+            try:
+                await toggle.click()
+                # Wait for the panel animation to settle before scanning
+                await asyncio.sleep(0.5)
+            except Exception:
+                continue
+            raw_hrefs.extend(await _scrape_links_from_current_view(page))
+    else:
+        # No accordion - all links should be directly in the DOM
+        raw_hrefs.extend(await _scrape_links_from_current_view(page))
+
     absolute = [normalize_url(h, current_origin) for h in raw_hrefs]
     return deduplicate(absolute)
 
