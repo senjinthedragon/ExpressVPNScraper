@@ -4,17 +4,46 @@
 # Licensed under the MIT License.
 # See /LICENSE for full license information.
 #
-# Unit tests for the three pure helper functions exported by session.py.
+# Unit tests for the pure helper functions exported by session.py.
 # None of these tests require a browser or network access - they run
 # entirely in-process and finish in milliseconds.
-#   - TestNormalizeUrl  covers absolute passthrough and relative resolution.
-#   - TestFilenameFromUrl  covers path extraction and query-string stripping.
-#   - TestDeduplicate  covers ordering guarantees and full-URL deduplication.
+#   - TestBaseOrigin     covers scheme+host extraction from full URLs.
+#   - TestNormalizeUrl   covers absolute passthrough and relative resolution.
+#   - TestFilenameFromUrl covers path extraction and query-string stripping.
+#   - TestDeduplicate    covers ordering guarantees and full-URL deduplication.
 
 
-from session import deduplicate, filename_from_url, normalize_url
+from session import base_origin, deduplicate, filename_from_url, normalize_url
 
 BASE = "https://www.expressvpn.com"
+
+
+# ---------------------------------------------------------------------------
+# base_origin
+# ---------------------------------------------------------------------------
+
+
+class TestBaseOrigin:
+    def test_returns_scheme_and_host_only(self):
+        assert (
+            base_origin("https://portal.expressvpn.com/dashboard")
+            == "https://portal.expressvpn.com"
+        )
+
+    def test_works_on_main_site(self):
+        assert (
+            base_origin("https://www.expressvpn.com/setup/manual") == "https://www.expressvpn.com"
+        )
+
+    def test_strips_deep_path(self):
+        assert base_origin("https://example.com/a/b/c/d.ovpn") == "https://example.com"
+
+    def test_http_scheme_preserved(self):
+        assert base_origin("http://example.com/page") == "http://example.com"
+
+    def test_no_trailing_slash(self):
+        result = base_origin("https://portal.expressvpn.com/")
+        assert not result.endswith("/")
 
 
 # ---------------------------------------------------------------------------

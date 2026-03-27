@@ -15,29 +15,39 @@
 #   - download_ovpn_files() triggers each download via an injected <a> element
 #     (matching real browser behaviour) with an authenticated-request fallback.
 #
-# Pure helpers at the bottom of the file (normalize_url, filename_from_url,
-# deduplicate) have no browser dependency and are covered by unit tests.
+# Pure helpers at the bottom of the file (base_origin, normalize_url,
+# filename_from_url, deduplicate) have no browser dependency and are
+# covered by unit tests.
 
 import asyncio
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-# Base URL used when resolving relative hrefs found on the page
+# The public marketing site - used as the entry point for navigation
 EXPRESSVPN_URL = "https://www.expressvpn.com"
+
+# The authenticated portal that the login flow redirects to.
+# Download links and account pages live here after sign-in.
+PORTAL_URL = "https://portal.expressvpn.com"
 
 # Local directory where downloaded .ovpn files are written
 DOWNLOAD_DIR = Path("ovpn_files")
 
-# Candidate paths to try when searching for the config download page.
-# ExpressVPN occasionally restructures their site, so we try a few known
-# locations before giving up and asking the user to navigate manually.
-DOWNLOAD_PAGE_CANDIDATES = [
-    "/vpn-software/vpn-configs",
-    "/setup/manual",
-    "/support/vpn-setup/manual-config-expressvpn-with-openvpn/",
+# Candidate paths to try on each known base URL when searching for the
+# config download page. Tried in order - first match with .ovpn links wins.
+# The portal paths are tried first since that is where the session lands
+# after login; the main-site paths are a fallback.
+DOWNLOAD_PAGE_CANDIDATES: list[tuple[str, str]] = [
+    (PORTAL_URL, "/setup/manual"),
+    (PORTAL_URL, "/vpn-configs"),
+    (PORTAL_URL, "/downloads"),
+    (PORTAL_URL, "/dashboard"),
+    (EXPRESSVPN_URL, "/vpn-software/vpn-configs"),
+    (EXPRESSVPN_URL, "/support/vpn-setup/manual-config-expressvpn-with-openvpn/"),
 ]
 
 # Seconds to wait between individual file downloads - keeps request
@@ -121,14 +131,22 @@ async def login(page: Page) -> None:
 async def find_ovpn_download_page(page: Page) -> bool:
     """Try to navigate to the page that lists .ovpn download links.
 
-    Attempts each known candidate URL in order and returns True as soon
-    as one is found that contains at least one .ovpn link. Falls back
-    to searching the current page for any config/setup navigation links.
-    Returns False if nothing is found so the caller can ask the user to
-    navigate manually.
+    First checks the page we are already on (the post-login landing page
+    may already contain download links). Then tries each candidate URL
+    in DOWNLOAD_PAGE_CANDIDATES. Finally scans the current page for any
+    navigation link that looks like a config or setup section.
+
+    Returns True as soon as .ovpn links are found, False if nothing works
+    so the caller can ask the user to navigate manually.
     """
-    for path in DOWNLOAD_PAGE_CANDIDATES:
-        url = EXPRESSVPN_URL + path
+    # Check the post-login landing page before navigating anywhere else
+    landing_links = await page.locator("a[href$='.ovpn']").all()
+    if landing_links:
+        print(f"Found {len(landing_links)} .ovpn link(s) on the post-login page.")
+        return True
+
+    for base, path in DOWNLOAD_PAGE_CANDIDATES:
+        url = base + path
         print(f"Trying {url} ...")
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
@@ -166,6 +184,8 @@ async def collect_ovpn_links(page: Page) -> list[str]:
 
     Checks both standard anchor hrefs and data attributes (data-href,
     data-url) that some download buttons use instead of plain anchors.
+    Relative hrefs are resolved against the current page's origin so
+    they work correctly whether we are on the portal or the main site.
     """
     raw_hrefs: list[str] = []
 
@@ -183,8 +203,10 @@ async def collect_ovpn_links(page: Page) -> list[str]:
         if href:
             raw_hrefs.append(href)
 
-    # Normalise relative URLs to absolute and remove duplicates
-    absolute = [normalize_url(h, EXPRESSVPN_URL) for h in raw_hrefs]
+    # Resolve relative hrefs against the domain we are currently on,
+    # not the hardcoded main site URL.
+    current_origin = base_origin(page.url)
+    absolute = [normalize_url(h, current_origin) for h in raw_hrefs]
     return deduplicate(absolute)
 
 
@@ -254,6 +276,21 @@ async def download_ovpn_files(page: Page, links: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # Pure helper functions (no browser dependency - tested in tests/)
 # ---------------------------------------------------------------------------
+
+
+def base_origin(url: str) -> str:
+    """Return the scheme and host of a URL, with no trailing slash.
+
+    Used to resolve relative hrefs against whatever domain the browser
+    is currently on - which may be portal.expressvpn.com after login.
+
+    >>> base_origin("https://portal.expressvpn.com/dashboard")
+    'https://portal.expressvpn.com'
+    >>> base_origin("https://www.expressvpn.com/setup/manual")
+    'https://www.expressvpn.com'
+    """
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def normalize_url(href: str, base_url: str) -> str:
