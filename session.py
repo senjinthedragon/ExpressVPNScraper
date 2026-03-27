@@ -1,0 +1,287 @@
+# Copyright (c) 2026 senjinthedragon
+# Licensed under the MIT License - see LICENSE file for details.
+#
+# session.py - Browser session management for the ExpressVPN scraper.
+#
+# Contains all Playwright-driven logic: logging in via email OTP,
+# finding the .ovpn download page, collecting download links, and
+# saving the files to disk. Pure helper functions (URL normalisation,
+# filename extraction, deduplication) are kept at the bottom of this
+# file so they can be unit-tested without a live browser.
+
+import asyncio
+import re
+from pathlib import Path
+
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+# Base URL used when resolving relative hrefs found on the page
+EXPRESSVPN_URL = "https://www.expressvpn.com"
+
+# Local directory where downloaded .ovpn files are written
+DOWNLOAD_DIR = Path("ovpn_files")
+
+# Candidate paths to try when searching for the config download page.
+# ExpressVPN occasionally restructures their site, so we try a few known
+# locations before giving up and asking the user to navigate manually.
+DOWNLOAD_PAGE_CANDIDATES = [
+    "/vpn-software/vpn-configs",
+    "/setup/manual",
+    "/support/vpn-setup/manual-config-expressvpn-with-openvpn/",
+]
+
+# Seconds to wait between individual file downloads - keeps request
+# timing consistent with a human clicking through a download list.
+DOWNLOAD_DELAY_SECONDS = 0.8
+
+
+# ---------------------------------------------------------------------------
+# Login flow
+# ---------------------------------------------------------------------------
+
+
+async def login(page: Page) -> None:
+    """Walk through the ExpressVPN email-OTP login flow.
+
+    The user is prompted for their email address and, once ExpressVPN
+    sends the verification code, for that code as well. The browser
+    fills in both fields so the session cookies are set exactly as they
+    would be for a real user.
+    """
+    print("Navigating to ExpressVPN...")
+    await page.goto(EXPRESSVPN_URL, wait_until="domcontentloaded")
+
+    # The 'My Account' link is in the top navigation bar
+    print("Looking for 'My Account' link...")
+    account_link = page.get_by_role("link", name=re.compile(r"my account", re.IGNORECASE))
+    await account_link.first.click()
+    await page.wait_for_load_state("domcontentloaded")
+
+    # Prompt the user for their email and fill it into the login form
+    email = input("Enter your ExpressVPN account email: ").strip()
+    email_input = page.get_by_role("textbox", name=re.compile(r"email", re.IGNORECASE))
+    await email_input.fill(email)
+
+    # Submit the email to trigger the OTP email
+    submit = page.get_by_role(
+        "button",
+        name=re.compile(r"send|continue|next|sign in", re.IGNORECASE),
+    )
+    await submit.first.click()
+    print("Email submitted. Check your inbox for the verification code.")
+
+    # Wait until the code entry field appears
+    await page.wait_for_selector("input", timeout=30_000)
+
+    code = input("Enter the verification code from your email: ").strip()
+
+    # ExpressVPN may render the code field as a single text input or as
+    # individual single-digit boxes - handle both cases.
+    inputs = page.locator("input[type='text'], input[type='number'], input[type='tel']")
+    count = await inputs.count()
+
+    if count == 1:
+        # Single input - paste the full code
+        await inputs.nth(0).fill(code)
+    elif count >= len(code):
+        # One box per digit - fill each character separately
+        for i, digit in enumerate(code):
+            await inputs.nth(i).fill(digit)
+    else:
+        print(f"Unexpected input count ({count}). Attempting to fill first input.")
+        await inputs.nth(0).fill(code)
+
+    # Submit the code to complete authentication
+    confirm = page.get_by_role(
+        "button",
+        name=re.compile(r"verify|confirm|sign in|continue|submit", re.IGNORECASE),
+    )
+    await confirm.first.click()
+
+    print("Waiting for login to complete...")
+    await page.wait_for_load_state("networkidle", timeout=15_000)
+    print(f"Logged in. Current URL: {page.url}")
+
+
+# ---------------------------------------------------------------------------
+# Download page navigation
+# ---------------------------------------------------------------------------
+
+
+async def find_ovpn_download_page(page: Page) -> bool:
+    """Try to navigate to the page that lists .ovpn download links.
+
+    Attempts each known candidate URL in order and returns True as soon
+    as one is found that contains at least one .ovpn link. Falls back
+    to searching the current page for any config/setup navigation links.
+    Returns False if nothing is found so the caller can ask the user to
+    navigate manually.
+    """
+    for path in DOWNLOAD_PAGE_CANDIDATES:
+        url = EXPRESSVPN_URL + path
+        print(f"Trying {url} ...")
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+        except PlaywrightTimeoutError:
+            continue
+
+        if response and response.ok:
+            links = await page.locator("a[href$='.ovpn']").all()
+            if links:
+                print(f"Found {len(links)} .ovpn link(s) at {url}")
+                return True
+
+    # None of the candidate paths worked - look for a navigation link on
+    # whatever page we landed on after login.
+    print("Searching current page for config or setup links...")
+    config_link = page.get_by_role(
+        "link",
+        name=re.compile(r"openvpn|config|manual setup", re.IGNORECASE),
+    )
+    if await config_link.count() > 0:
+        await config_link.first.click()
+        await page.wait_for_load_state("domcontentloaded")
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Link collection
+# ---------------------------------------------------------------------------
+
+
+async def collect_ovpn_links(page: Page) -> list[str]:
+    """Return a deduplicated list of absolute .ovpn download URLs.
+
+    Checks both standard anchor hrefs and data attributes (data-href,
+    data-url) that some download buttons use instead of plain anchors.
+    """
+    raw_hrefs: list[str] = []
+
+    # Standard <a href="...ovpn"> links
+    anchors = await page.locator("a[href$='.ovpn']").all()
+    for anchor in anchors:
+        href = await anchor.get_attribute("href")
+        if href:
+            raw_hrefs.append(href)
+
+    # Buttons or divs with data-href / data-url attributes
+    data_els = await page.locator("[data-href$='.ovpn'], [data-url$='.ovpn']").all()
+    for el in data_els:
+        href = await el.get_attribute("data-href") or await el.get_attribute("data-url")
+        if href:
+            raw_hrefs.append(href)
+
+    # Normalise relative URLs to absolute and remove duplicates
+    absolute = [normalize_url(h, EXPRESSVPN_URL) for h in raw_hrefs]
+    return deduplicate(absolute)
+
+
+# ---------------------------------------------------------------------------
+# File download
+# ---------------------------------------------------------------------------
+
+
+async def download_ovpn_files(page: Page, links: list[str]) -> None:
+    """Download each .ovpn URL and write it to DOWNLOAD_DIR.
+
+    First attempts a JS-triggered download (which preserves the
+    browser's download dialogue semantics). If that times out, falls
+    back to a plain authenticated GET request reusing the session
+    cookies already held by the browser context.
+    """
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    print(f"\nDownloading {len(links)} .ovpn file(s) to '{DOWNLOAD_DIR}/'...")
+
+    for i, url in enumerate(links, 1):
+        filename = filename_from_url(url)
+        dest = DOWNLOAD_DIR / filename
+
+        if dest.exists():
+            print(f"  [{i}/{len(links)}] Already exists, skipping: {filename}")
+            continue
+
+        try:
+            # Trigger a download by injecting a temporary <a> element and
+            # clicking it - this keeps the download flow identical to what
+            # a user would do manually in the browser.
+            async with page.expect_download(timeout=30_000) as dl_info:
+                await page.evaluate(
+                    """url => {
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = '';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                    }""",
+                    url,
+                )
+            download = await dl_info.value
+            await download.save_as(dest)
+            print(f"  [{i}/{len(links)}] Downloaded: {filename}")
+
+        except PlaywrightTimeoutError:
+            # JS-triggered download did not fire - fall back to fetching
+            # the file directly using the page's authenticated session.
+            try:
+                response = await page.request.get(url)
+                if response.ok:
+                    dest.write_bytes(await response.body())
+                    print(f"  [{i}/{len(links)}] Downloaded (fallback): {filename}")
+                else:
+                    print(f"  [{i}/{len(links)}] Failed ({response.status}): {url}")
+            except Exception as exc:
+                print(f"  [{i}/{len(links)}] Error: {exc} - {url}")
+
+        # Brief pause between requests to match human download cadence
+        await asyncio.sleep(DOWNLOAD_DELAY_SECONDS)
+
+    print(f"\nDone. Files saved to '{DOWNLOAD_DIR.resolve()}'")
+
+
+# ---------------------------------------------------------------------------
+# Pure helper functions (no browser dependency - tested in tests/)
+# ---------------------------------------------------------------------------
+
+
+def normalize_url(href: str, base_url: str) -> str:
+    """Return an absolute URL, prepending base_url if href is relative.
+
+    >>> normalize_url("/configs/uk.ovpn", "https://www.expressvpn.com")
+    'https://www.expressvpn.com/configs/uk.ovpn'
+    >>> normalize_url("https://cdn.example.com/us.ovpn", "https://www.expressvpn.com")
+    'https://cdn.example.com/us.ovpn'
+    """
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    # Ensure we don't double up the slash between base and path
+    return base_url.rstrip("/") + "/" + href.lstrip("/")
+
+
+def filename_from_url(url: str) -> str:
+    """Extract a clean filename from a URL, stripping any query string.
+
+    >>> filename_from_url("https://example.com/configs/uk-london.ovpn?v=2")
+    'uk-london.ovpn'
+    >>> filename_from_url("https://example.com/us-new-york.ovpn")
+    'us-new-york.ovpn'
+    """
+    return url.split("/")[-1].split("?")[0]
+
+
+def deduplicate(items: list[str]) -> list[str]:
+    """Return a list with duplicates removed, preserving original order.
+
+    >>> deduplicate(["a", "b", "a", "c"])
+    ['a', 'b', 'c']
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result

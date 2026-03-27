@@ -1,0 +1,15 @@
+# pyproject.toml - Tool configuration for ruff (linter) and pytest.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/W - pycodestyle errors and warnings
+# F   - Pyflakes (unused imports, undefined names, etc.)
+# I   - isort (import ordering)
+select = ["E", "W", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

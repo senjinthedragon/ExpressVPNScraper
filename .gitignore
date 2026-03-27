@@ -1,0 +1,27 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Pytest cache
+.pytest_cache/
+.coverage
+
+# Downloaded config files - these are personal and should not be committed
+ovpn_files/
+
+# Claude AI internal folders
+.claude/
+
+# Environment and secrets - in case any are added later
+.env
+*.env
+secrets.json
+
+# OS junk
+.DS_Store
+Thumbs.db
