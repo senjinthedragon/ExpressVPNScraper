@@ -67,15 +67,19 @@ async def login(page: Page, email: str | None = None) -> None:
     """
     await page.goto(EXPRESSVPN_URL, wait_until="domcontentloaded")
 
-    # The 'My Account' link is in the top navigation bar
-    account_link = page.get_by_role("link", name=re.compile(r"my account", re.IGNORECASE))
+    # The 'My Account' link is in the top navigation bar. Its visible text is
+    # "My Account" but ExpressVPN sets aria-label="Sign In", which is what
+    # get_by_role matches against (accessible name, not visible text).
+    account_link = page.get_by_role("link", name=re.compile(r"my account|sign in", re.IGNORECASE))
     await account_link.first.click()
     await page.wait_for_load_state("domcontentloaded")
 
     # Use the supplied email or prompt interactively
     if not email:
         email = input("Enter your ExpressVPN account email: ").strip()
-    email_input = page.get_by_role("textbox", name=re.compile(r"email", re.IGNORECASE))
+    # The Keycloak-hosted sign-in form gives this field no accessible name
+    # (no <label> or aria-label), only a placeholder, so match on that instead.
+    email_input = page.get_by_placeholder(re.compile(r"email", re.IGNORECASE))
     await email_input.fill(email)
 
     # Submit the email to trigger the OTP email
@@ -155,9 +159,11 @@ async def find_ovpn_download_page(page: Page) -> None:
     section. We discover the correct URL from the portal navigation links
     rather than constructing it manually.
 
-    The #manual fragment is appended directly to the URL rather than
-    clicking a tab - this is more reliable in headless mode where tab
-    clicks can land on the wrong section.
+    Unlike the old portal, the manual-config accordion is no longer reachable
+    via a "#manual" URL fragment - the setup page now defaults to an
+    app-download/activation-code view. Reaching the manual OpenVPN config
+    section requires clicking through the device picker: "Show other
+    devices" -> "Advanced setup" -> "Manual Configuration".
 
     Raises RuntimeError if navigation fails.
     """
@@ -170,17 +176,26 @@ async def find_ovpn_download_page(page: Page) -> None:
         setup_url = PORTAL_URL + "/setup"
         print(f"Warning: no subscription link found, trying {setup_url} ...")
 
-    # Strip any existing fragment and force the #manual section directly.
-    # This is equivalent to clicking the Manual Config tab but works
-    # consistently in headless mode.
-    manual_url = setup_url.split("#")[0] + "#manual"
+    setup_url = setup_url.split("#")[0]
 
     try:
-        response = await page.goto(manual_url, wait_until="domcontentloaded", timeout=15_000)
+        response = await page.goto(setup_url, wait_until="domcontentloaded", timeout=15_000)
         if not (response and response.ok):
-            raise RuntimeError(f"Failed to load the download page ({manual_url})")
+            raise RuntimeError(f"Failed to load the download page ({setup_url})")
     except PlaywrightTimeoutError:
-        raise RuntimeError(f"Timed out loading the download page ({manual_url})")
+        raise RuntimeError(f"Timed out loading the download page ({setup_url})")
+
+    try:
+        await page.get_by_text("Show other devices", exact=True).first.click(timeout=15_000)
+        await page.get_by_role("button", name=re.compile(r"^Advanced setup$")).click(timeout=15_000)
+        await page.get_by_role("button", name=re.compile(r"^Manual Configuration$")).click(
+            timeout=15_000
+        )
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError(
+            "Could not reach the Manual Configuration section - the portal "
+            "layout may have changed again."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

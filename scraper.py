@@ -36,7 +36,7 @@ from session import (
     login,
 )
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # Maps ISO 3166-1 alpha-2 country codes to the country name as it appears
 # in ExpressVPN location labels. A few non-standard codes are included for
